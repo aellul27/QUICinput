@@ -44,6 +44,7 @@ fn run_key_monitor() {
 
     let callback = move |event: Event| -> Option<Event> {
         println!("Event: {:?} | text {:?}", event.event_type, event.name.as_deref());
+        println!("{:?}", rmp_serde::to_vec(&event.event_type));
         match event.event_type {
             EventType::KeyPress(key) => {
                 println!("Key press   {:?} | text {:?}", key, event.name.as_deref());

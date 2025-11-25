@@ -1,1 +1,1 @@
-# QUICinput
+# WSinput

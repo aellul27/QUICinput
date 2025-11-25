@@ -3,7 +3,7 @@ name = "client"
 version = "0.1.0"
 edition = "2024"
 authors = ["Alex E <igsalexcodes@gmail.com>"]
-repository = "https://github.com/aellul27/QUICinput"
+repository = "https://github.com/aellul27/QUICInput"
 
 
 [dependencies]
@@ -13,3 +13,4 @@ libadwaita = "0.8.0"
 glib = { version = "0.21.4" }
 display-info = "0.5.7"
 rdev = { git = "https://github.com/Narsil/rdev.git", features = ["unstable_grab", "serialize"] }
+rmp-serde = "1.3.0"
