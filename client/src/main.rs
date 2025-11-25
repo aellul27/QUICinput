@@ -3,18 +3,27 @@ mod input;
 mod key_monitor;
 mod menubar;
 mod windowresolution;
+mod quic;
 
 use libadwaita::gio::SimpleAction;
 use libadwaita::prelude::*;
 use libadwaita::{glib, Application, ApplicationWindow, HeaderBar};
 use gtk4::{Box, Orientation, Stack, StackTransitionType};
+use rustls::crypto::aws_lc_rs;
+use rustls::crypto::CryptoProvider;
+use std::net::{SocketAddr, IpAddr, Ipv4Addr};
+
+use crate::quic::{quic_runtime, run_client};
 
 const APP_ID: &str = "com.aellul27.quicinput.client";
 
 fn main() -> glib::ExitCode {
     // Create a new application
     let app = Application::builder().application_id(APP_ID).build();
-
+    CryptoProvider::install_default(aws_lc_rs::default_provider())
+            .expect("Failed to install default crypto provider");
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4433);
+    let _ = quic_runtime().block_on(run_client(server_addr));
     // Connect to "activate" signal of `app`
     app.connect_activate(build_ui);
 
