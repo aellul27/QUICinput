@@ -95,6 +95,16 @@ fn wire_enter_button(
     status_label: &Label,
     on_success: Rc<dyn Fn(String, u16)>,
 ) {
+    let button_for_ip = enter_button.clone();
+    ip_entry.connect_activate(move |_entry| {
+        button_for_ip.emit_clicked();
+    });
+
+    let button_for_port = enter_button.clone();
+    port_entry.connect_activate(move |_entry| {
+        button_for_port.emit_clicked();
+    });
+
     let ip_entry = ip_entry.clone();
     let port_entry = port_entry.clone();
     let status_row = status_row.clone();

@@ -98,7 +98,8 @@ pub async fn close_client(
     connection: Connection,
     endpoint: Endpoint
 ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
-    drop(connection);
+    connection.close(0u32.into(), b"done");
+    // Give the server a fair chance to receive the close packet
     endpoint.wait_idle().await;
     Ok(())
 }

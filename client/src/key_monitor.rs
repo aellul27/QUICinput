@@ -1,10 +1,13 @@
 use rdev::{grab, simulate, Event, EventType, Key};
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
+use shared::MouseMove;
 use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, sleep};
+use crate::quic::{*};
+use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 
 static IGNORE_MOUSE: AtomicBool = AtomicBool::new(false);
 
@@ -44,6 +47,13 @@ struct MonitorStop;
 fn run_key_monitor() {
     #[cfg(target_os = "macos")]
     set_is_main_thread(false);
+    let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4433);
+    let (endpoint, connection) = quic_runtime()
+        .block_on(run_client(server_addr))
+        .expect("failed to connect");
+    let mut send_stream = quic_runtime()
+        .block_on(open_uni(connection.clone()))
+        .expect("failed to open send stream");
     let (middle_y, middle_x) = find_window_size();
     let _ = simulate(&EventType::MouseMove { x: middle_x, y: middle_y});
 
@@ -61,6 +71,10 @@ fn run_key_monitor() {
 
                 if state.ctrl_alt_active() && matches!(key, Key::Num0 | Key::Kp0) {
                     println!("Detected Ctrl+Alt+0. Stopping key monitor.");
+                    send_stream.finish().unwrap();
+                    let _ = sleep(std::time::Duration::from_millis(10));
+                    let _ = quic_runtime()
+                        .block_on(close_client(connection.clone(), endpoint.clone()));
                     request_monitor_stop();
                     return None;
                 }
@@ -78,7 +92,10 @@ fn run_key_monitor() {
                     return None; // Swallow simulated event
                 }
 
-                println!("Mouse moved x= {:?} | y= {:?}", x - middle_x, y - middle_y);
+                let data = MouseMove {dx: (x - middle_x), dy: (y - middle_y) };
+                let buf = rmp_serde::to_vec(&data).expect("failed to serialise");
+                let _ = quic_runtime()
+                    .block_on(send_data(&mut send_stream, &buf));
 
                 // Mark next mouse event as simulated
                 IGNORE_MOUSE.store(true, Ordering::SeqCst);
@@ -89,7 +106,7 @@ fn run_key_monitor() {
             _ => {}
         }
 
-        Some(event)
+        None
     };
 
     if let Err(error) = grab(callback) {

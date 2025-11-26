@@ -75,6 +75,20 @@ async fn handle_connection(incoming: quinn::Incoming, permit: OwnedSemaphorePerm
 
             let bi_task = tokio::spawn(listen_bi_streams(connection.clone()));
             let uni_task = tokio::spawn(listen_uni_streams(connection.clone()));
+            let close_task = tokio::spawn(async move {
+                let reason = connection.closed().await;
+                match reason {
+                    quinn::ConnectionError::ApplicationClosed { .. } => {
+                        println!("[server] connection closed by peer");
+                    }
+                    quinn::ConnectionError::LocallyClosed => {
+                        println!("[server] connection closed locally");
+                    }
+                    err => {
+                        eprintln!("[server] connection closed with error: {err}");
+                    }
+                }
+            });
 
             if let Err(err) = bi_task.await {
                 eprintln!("[server] bi stream task failed: {err}");
@@ -82,6 +96,10 @@ async fn handle_connection(incoming: quinn::Incoming, permit: OwnedSemaphorePerm
 
             if let Err(err) = uni_task.await {
                 eprintln!("[server] uni stream task failed: {err}");
+            }
+
+            if let Err(err) = close_task.await {
+                eprintln!("[server] connection close task failed: {err}");
             }
         }
         Err(err) => {
