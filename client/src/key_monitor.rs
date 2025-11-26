@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self};
 use quinn::{Connection, Endpoint};
-use crate::quic::{*};
+use crate::quic_helper_thread::{spawn_quic_helper, QuicCommand, QuicSender};
 
 static IGNORE_MOUSE: AtomicBool = AtomicBool::new(false);
 
@@ -46,22 +46,23 @@ pub fn start_global_key_monitor(endpoint: Endpoint, connection: Connection) {
     });
 }
 
+fn send_data(quic_sender: &mut Option<QuicSender>, command: QuicCommand) {
+    let send_result = quic_sender
+        .as_ref()
+        .map(|sender| sender.send(command));
+    if matches!(send_result, Some(Err(_))) {
+        *quic_sender = None;
+    }
+}
+
 struct MonitorStop;
 
 fn run_key_monitor(_endpoint: Endpoint, connection: Connection) {
     #[cfg(target_os = "macos")]
     set_is_main_thread(false);
-    
-    let mut mouse_stream = Some(
-        quic_runtime()
-            .block_on(open_uni(connection.clone()))
-            .expect("failed to open send stream"),
-    );
-    let mut keyboard_stream = Some(
-        quic_runtime()
-            .block_on(open_uni(connection.clone()))
-            .expect("failed to open send stream"),
-    );
+
+    let mut quic_sender = Some(spawn_quic_helper(connection));
+
     let (middle_y, middle_x) = find_window_size();
     let _ = simulate(&EventType::MouseMove { x: middle_x, y: middle_y});
 
@@ -72,10 +73,7 @@ fn run_key_monitor(_endpoint: Endpoint, connection: Connection) {
         match event.event_type {
             EventType::KeyPress(key) => {
                 let buf = rmp_serde::to_vec(&event.event_type).expect("failed to serialise");
-                if let Some(stream) = keyboard_stream.as_mut() {
-                    let _ = quic_runtime()
-                        .block_on(send_data(stream, &buf));
-                }
+                send_data(&mut quic_sender, QuicCommand::Keyboard(buf));
                 let mut state = modifier_handle
                     .lock()
                     .expect("modifier mutex poisoned");
@@ -83,28 +81,22 @@ fn run_key_monitor(_endpoint: Endpoint, connection: Connection) {
 
                 if state.ctrl_alt_active() && matches!(key, Key::Num0 | Key::Kp0) {
                     println!("Detected Ctrl+Alt+0. Stopping key monitor.");
-                    if let Some(mut stream) = mouse_stream.take() {
-                        let _ = stream.finish();
-                        drop(stream);
-                    }
-                    if let Some(mut stream) = keyboard_stream.take() {
-                        let _ = stream.finish();
-                        drop(stream);
+                    if let Some(sender) = quic_sender.take() {
+                        let _ = sender.send(QuicCommand::Shutdown);
                     }
                     request_monitor_stop();
                     return None;
                 }
+                return None
             }
             EventType::KeyRelease(key) => {
                 let buf = rmp_serde::to_vec(&event.event_type).expect("failed to serialise");
-                if let Some(stream) = keyboard_stream.as_mut() {
-                    let _ = quic_runtime()
-                        .block_on(send_data(stream, &buf));
-                }
+                send_data(&mut quic_sender, QuicCommand::Keyboard(buf));
                 modifier_handle
                     .lock()
                     .expect("modifier mutex poisoned")
                     .update(key, false);
+                return None
             }
             EventType::MouseMove { x, y } => {
                 // Ignore the event triggered by simulate()
@@ -114,26 +106,26 @@ fn run_key_monitor(_endpoint: Endpoint, connection: Connection) {
 
                 let data = MouseMove {dx: (x - middle_x), dy: (y - middle_y) };
                 let buf = rmp_serde::to_vec(&data).expect("failed to serialise");
-                if let Some(stream) = mouse_stream.as_mut() {
-                    let _ = quic_runtime()
-                        .block_on(send_data(stream, &buf));
-                }
+                send_data(&mut quic_sender, QuicCommand::Mouse(buf));
 
                 // Mark next mouse event as simulated
                 IGNORE_MOUSE.store(true, Ordering::SeqCst);
 
                 let _ = simulate(&EventType::MouseMove { x: middle_x, y: middle_y });
             }
-            EventType::ButtonPress(..) | EventType::ButtonRelease(..) | EventType::Wheel { .. } => {
+            EventType::ButtonPress(..) | EventType::ButtonRelease(..) => {
                 let buf = rmp_serde::to_vec(&event.event_type).expect("failed to serialise");
-                if let Some(stream) = mouse_stream.as_mut() {
-                    let _ = quic_runtime()
-                        .block_on(send_data(stream, &buf));
+                send_data(&mut quic_sender, QuicCommand::Mouse(buf));
+            }
+            EventType::Wheel { delta_x, delta_y } => {
+                if delta_x != 0 || delta_y != 0 {
+                    let buf = rmp_serde::to_vec(&event.event_type).expect("failed to serialise");
+                    send_data(&mut quic_sender, QuicCommand::Mouse(buf));
                 }
             }
         }
 
-        None
+        Some(event)
     };
 
     if let Err(error) = grab(callback) {

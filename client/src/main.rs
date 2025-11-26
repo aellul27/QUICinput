@@ -4,6 +4,7 @@ mod key_monitor;
 mod menubar;
 mod windowresolution;
 mod quic;
+mod quic_helper_thread;
 
 use libadwaita::gio::SimpleAction;
 use libadwaita::prelude::*;
