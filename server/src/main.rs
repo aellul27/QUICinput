@@ -11,18 +11,24 @@ use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use shared::MouseMove;
 
+mod simulator;
+
+use simulator::EventSimulator;
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     // server and client are running on the same thread asynchronously
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 4433);
     const MAX_CONNECTIONS: usize = 16;
-    run_server(addr, MAX_CONNECTIONS).await
+    let simulator = Arc::new(EventSimulator::new());
+    run_server(addr, MAX_CONNECTIONS, simulator).await
 }
 
 async fn run_server(
     addr: SocketAddr,
     max_connections: usize,
+    simulator: Arc<EventSimulator>,
 ) -> Result<(), Box<dyn Error + Send + Sync + 'static>> {
     let (endpoint, _server_cert) = make_server_endpoint(addr)?;
     println!("[server] listening on {} with max {} connections", addr, max_connections);
@@ -38,8 +44,9 @@ async fn run_server(
             }
         };
 
+        let simulator_for_connection = Arc::clone(&simulator);
         tokio::spawn(async move {
-            handle_connection(incoming, permit).await;
+            handle_connection(incoming, permit, simulator_for_connection).await;
         });
     }
 
@@ -68,7 +75,11 @@ fn configure_server()
 
 const MAX_STREAM_DATA: usize = 64 * 1024;
 
-async fn handle_connection(incoming: quinn::Incoming, permit: OwnedSemaphorePermit) {
+async fn handle_connection(
+    incoming: quinn::Incoming,
+    permit: OwnedSemaphorePermit,
+    simulator: Arc<EventSimulator>,
+) {
     match incoming.await {
         Ok(connection) => {
             println!(
@@ -77,7 +88,7 @@ async fn handle_connection(incoming: quinn::Incoming, permit: OwnedSemaphorePerm
             );
 
             let bi_task = tokio::spawn(listen_bi_streams(connection.clone()));
-            let uni_task = tokio::spawn(listen_uni_streams(connection.clone()));
+            let uni_task = tokio::spawn(listen_uni_streams(connection.clone(), Arc::clone(&simulator)));
             let close_task = tokio::spawn(async move {
                 let reason = connection.closed().await;
                 match reason {
@@ -136,14 +147,15 @@ async fn listen_bi_streams(connection: quinn::Connection) {
     }
 }
 
-async fn listen_uni_streams(connection: quinn::Connection) {
+async fn listen_uni_streams(connection: quinn::Connection, simulator: Arc<EventSimulator>) {
     loop {
         match connection.accept_uni().await {
             Ok(recv) => {
                 let handle = tokio::runtime::Handle::current();
+                let simulator = Arc::clone(&simulator);
                 thread::spawn(move || {
                     handle.block_on(async move {
-                        handle_uni_stream(recv).await;
+                        handle_uni_stream(recv, simulator).await;
                     });
                 });
             }
@@ -189,7 +201,7 @@ async fn handle_bi_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStre
     }
 }
 
-async fn handle_uni_stream(mut recv: quinn::RecvStream) {
+async fn handle_uni_stream(mut recv: quinn::RecvStream, simulator: Arc<EventSimulator>) {
     let mut total = 0usize;
 
     loop {
@@ -203,10 +215,15 @@ async fn handle_uni_stream(mut recv: quinn::RecvStream) {
                         mouse_move.dy
                     );
                 } else if let Ok(event_type) = rmp_serde::from_slice::<EventType>(&chunk.bytes) {
-                    println!(
-                        "[server] uni stream event: {:?}",
-                        event_type
-                    );
+                    match event_type {
+                        EventType::MouseMove { .. } => {
+                            println!("[server] uni stream event (mouse move)");
+                        }
+                        other => {
+                            println!("[server] uni stream event: {:?}", other);
+                            simulator.enqueue(other);
+                        }
+                    }
                 } else {
                     println!(
                         "[server] uni stream unknown payload ({} bytes)",
