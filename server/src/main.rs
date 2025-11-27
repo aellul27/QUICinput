@@ -2,6 +2,7 @@ use std::{
     error::Error,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
+    thread,
 };
 
 use quinn::{Endpoint, ServerConfig};
@@ -116,8 +117,11 @@ async fn listen_bi_streams(connection: quinn::Connection) {
     loop {
         match connection.accept_bi().await {
             Ok((send, recv)) => {
-                tokio::spawn(async move {
-                    handle_bi_stream(send, recv).await;
+                let handle = tokio::runtime::Handle::current();
+                thread::spawn(move || {
+                    handle.block_on(async move {
+                        handle_bi_stream(send, recv).await;
+                    });
                 });
             }
             Err(quinn::ConnectionError::ApplicationClosed { .. })
@@ -136,8 +140,11 @@ async fn listen_uni_streams(connection: quinn::Connection) {
     loop {
         match connection.accept_uni().await {
             Ok(recv) => {
-                tokio::spawn(async move {
-                    handle_uni_stream(recv).await;
+                let handle = tokio::runtime::Handle::current();
+                thread::spawn(move || {
+                    handle.block_on(async move {
+                        handle_uni_stream(recv).await;
+                    });
                 });
             }
             Err(quinn::ConnectionError::ApplicationClosed { .. })
