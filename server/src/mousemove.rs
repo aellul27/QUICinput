@@ -2,12 +2,18 @@ use shared::MouseMove;
 
 #[cfg(target_os = "linux")]
 use uinput::event::relative;
+#[cfg(target_os = "linux")]
+use uinput::event::controller::Controller::Mouse;
+#[cfg(target_os = "linux")]
+use uinput::event::controller::Mouse::Left;
+#[cfg(target_os = "linux")]
+use uinput::event::Event::{Controller};
 
 #[cfg(target_os = "linux")]
 pub fn create_virtual_mouse() -> Result<uinput::Device, uinput::Error> {
     uinput::default()?
         .name("my-virtual-mouse")?
-        .event(Mouse::Left)?
+        .event(Controller(Mouse(Left))).unwrap()
         .event(relative::Position::X)?
         .event(relative::Position::Y)?
         .create()
