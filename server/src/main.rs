@@ -247,7 +247,6 @@ async fn handle_bi_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStre
     }
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 async fn handle_uni_stream(
     mut recv: quinn::RecvStream,
     simulators: Simulators,
@@ -306,6 +305,9 @@ async fn handle_uni_stream(
             }
             Ok(None) => {
                 println!("[server] uni stream closed after {total} bytes");
+                simulators[0].enqueue(EventType::KeyRelease(rdev::Key::ControlLeft));
+                simulators[0].enqueue(EventType::KeyRelease(rdev::Key::Alt));
+                simulators[0].enqueue(EventType::KeyRelease(rdev::Key::Num0));
                 break;
             }
             Err(err) => {

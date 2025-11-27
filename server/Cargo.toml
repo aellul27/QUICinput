@@ -17,5 +17,5 @@ mouse_position = "0.1.4"
 rdev = { git = "https://github.com/Narsil/rdev.git", features = ["serialize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rdev = { git = "https://github.com/Narsil/rdev.git", features = ["wayland"] }
+rdev = { git = "https://github.com/Narsil/rdev.git", features = ["wayland", "x11"] }
 uinput = "0.1.3"
