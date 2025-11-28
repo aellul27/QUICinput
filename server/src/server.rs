@@ -290,7 +290,7 @@ async fn handle_uni_stream(
                         | EventType::Wheel { .. } => {
                             simulators[1].enqueue(event_type);
                         }
-                        other => {
+                        _other => {
                             simulators[0].enqueue(event_type);
                         }
                     }

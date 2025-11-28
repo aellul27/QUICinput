@@ -5,9 +5,12 @@ use libadwaita::{gio::Menu, Application};
 /// while still registering with the application (macOS picks it up globally).
 pub fn build(app: &Application) -> MenuButton {
     let menubar = Menu::new();
+
     let connect_menu = Menu::new();
     connect_menu.append(Some("Back to Connect"), Some("app.reset"));
     menubar.append_submenu(Some("Connect"), &connect_menu);
+
+    menubar.append(Some("Quit"), Some("app.quit"));
 
     app.set_menubar(Some(&menubar));
 
