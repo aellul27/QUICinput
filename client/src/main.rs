@@ -51,6 +51,25 @@ fn build_ui(app: &Application) {
         app.add_action(&reset_action);
     }
 
+    if app.lookup_action("quit").is_none() {
+        let controller_for_quit = controller.clone();
+        let app_for_quit = app.clone();
+        let quit_action = SimpleAction::new("quit", None);
+        quit_action.connect_activate(move |_, _| {
+            controller_for_quit.shutdown();
+            app_for_quit.quit();
+        });
+        app.add_action(&quit_action);
+        app.set_accels_for_action("app.quit", &["<Primary>q"]);
+    }
+
+    {
+        let controller_for_shutdown = controller.clone();
+        app.connect_shutdown(move |_app| {
+            controller_for_shutdown.shutdown();
+        });
+    }
+
     let (window_height, window_width) = windowresolution::find_window_size();
 
     // Create a window, set the title, and size it relative to the primary display
@@ -61,6 +80,16 @@ fn build_ui(app: &Application) {
         .default_width(window_width as i32)
         .content(&toolbar_view)
         .build();
+
+    {
+        let controller_for_close = controller.clone();
+        let app_for_close = app.clone();
+        window.connect_close_request(move |_window| {
+            controller_for_close.shutdown();
+            app_for_close.quit();
+            glib::Propagation::Proceed
+        });
+    }
     
     // Present window
     window.present();
@@ -127,11 +156,15 @@ impl AppController {
     }
 
     fn reset(&self) {
+        self.shutdown();
+        self.stack.set_visible_child_name("connect");
+        self.connect_view.focus();
+    }
+
+    fn shutdown(&self) {
         self.shutdown_connection();
         self.input_view.reset();
         self.connect_view.reset();
-        self.stack.set_visible_child_name("connect");
-        self.connect_view.focus();
     }
 
     fn shutdown_connection(&self) {
