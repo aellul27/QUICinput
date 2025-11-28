@@ -1,6 +1,8 @@
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{Box, Button, Entry, Image, Label, Orientation, Spinner};
 use quinn::{Connection, Endpoint};
+use std::cell::{Cell, RefCell};
 use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 
@@ -11,35 +13,202 @@ const COLUMN_SPACING: i32 = 16;
 const INPUT_ROW_SPACING: i32 = 12;
 const STATUS_ROW_SPACING: i32 = 8;
 
-pub fn build<F>(on_success: F) -> Box
-where
-    F: Fn(String, u16, Endpoint, Connection) + 'static,
-{
-    let container = build_container();
-    container.append(&build_prompt());
+type ConnectHandler = dyn Fn(String, u16, Endpoint, Connection);
 
-    let (input_row, ip_entry, port_entry, enter_button) = build_input_row();
-    container.append(&input_row);
+#[derive(Clone)]
+pub struct ConnectView {
+    root: Box,
+    ip_entry: Entry,
+    port_entry: Entry,
+    enter_button: Button,
+    status_row: Box,
+    status_label: Label,
+    spinner_row: Box,
+    spinner: Spinner,
+    session_id: Rc<Cell<u64>>,
+    on_success: Rc<RefCell<Option<Rc<ConnectHandler>>>>,
+}
 
-    let (spinner_row, spinner) = build_spinner_row();
-    container.append(&spinner_row);
+impl ConnectView {
+    pub fn new() -> Self {
+        let root = build_container();
+        root.append(&build_prompt());
 
-    let (status_row, status_label) = build_status_row();
-    container.append(&status_row);
+        let (input_row, ip_entry, port_entry, enter_button) = build_input_row();
+        root.append(&input_row);
 
-    let on_success = Rc::new(on_success);
-    wire_enter_button(
-        &enter_button,
-        &ip_entry,
-        &port_entry,
-        &status_row,
-        &status_label,
-        &spinner_row,
-        &spinner,
-        on_success,
-    );
+        let (spinner_row, spinner) = build_spinner_row();
+        root.append(&spinner_row);
 
-    container
+        let (status_row, status_label) = build_status_row();
+        root.append(&status_row);
+
+        let view = Self {
+            root,
+            ip_entry,
+            port_entry,
+            enter_button,
+            status_row,
+            status_label,
+            spinner_row,
+            spinner,
+            session_id: Rc::new(Cell::new(0)),
+            on_success: Rc::new(RefCell::new(None)),
+        };
+
+        view.wire_enter_button();
+
+        view
+    }
+
+    pub fn widget(&self) -> Box {
+        self.root.clone()
+    }
+
+    pub fn set_on_connect<F>(&self, handler: F)
+    where
+        F: Fn(String, u16, Endpoint, Connection) + 'static,
+    {
+        let handler: Rc<ConnectHandler> = Rc::new(handler);
+        self.on_success.borrow_mut().replace(handler);
+    }
+
+    pub fn reset(&self) {
+        self.bump_session();
+        self.hide_status();
+        self.hide_spinner();
+        self.enter_button.set_sensitive(true);
+        self.ip_entry.set_sensitive(true);
+        self.port_entry.set_sensitive(true);
+        self.ip_entry.set_text("");
+        self.port_entry.set_text("");
+        self.ip_entry.grab_focus();
+    }
+
+    pub fn focus(&self) {
+        self.ip_entry.grab_focus();
+    }
+
+    fn wire_enter_button(&self) {
+        let button_for_ip = self.enter_button.clone();
+        self.ip_entry.connect_activate(move |_entry| {
+            button_for_ip.emit_clicked();
+        });
+
+        let button_for_port = self.enter_button.clone();
+        self.port_entry.connect_activate(move |_entry| {
+            button_for_port.emit_clicked();
+        });
+
+        let ip_entry = self.ip_entry.clone();
+        let port_entry = self.port_entry.clone();
+        let status_row = self.status_row.clone();
+        let status_label = self.status_label.clone();
+        let spinner_row = self.spinner_row.clone();
+        let spinner = self.spinner.clone();
+        let session_id = self.session_id.clone();
+        let on_success = self.on_success.clone();
+
+        self.enter_button.connect_clicked(move |button| {
+            hide_status(&status_row, &status_label);
+
+            let ip_value = ip_entry.text();
+            let ip = ip_value.trim().to_string();
+            if ip.is_empty() {
+                show_status(&status_row, &status_label, "IP address is required");
+                return;
+            }
+
+            let port_value = port_entry.text();
+            let port = port_value.trim().to_string();
+            if port.is_empty() {
+                show_status(&status_row, &status_label, "Port is required");
+                return;
+            }
+
+            let portnum = match port.parse::<u16>() {
+                Ok(n) => n,
+                Err(_) => {
+                    show_status(&status_row, &status_label, "Invalid port number");
+                    return;
+                }
+            };
+
+            let ip_addr = match ip.parse::<IpAddr>() {
+                Ok(a) => a,
+                Err(_) => {
+                    show_status(&status_row, &status_label, "Invalid IP address");
+                    return;
+                }
+            };
+            let server_addr = SocketAddr::new(ip_addr, portnum);
+
+            show_spinner(&spinner_row, &spinner);
+            button.set_sensitive(false);
+            ip_entry.set_sensitive(false);
+            port_entry.set_sensitive(false);
+
+            let runtime_handle = quic_runtime().handle().clone();
+            let status_row_async = status_row.clone();
+            let status_label_async = status_label.clone();
+            let spinner_row_async = spinner_row.clone();
+            let spinner_async = spinner.clone();
+            let ip_entry_async = ip_entry.clone();
+            let port_entry_async = port_entry.clone();
+            let button_async = button.clone();
+            let handler_option = on_success.borrow().clone();
+            let ip_for_callback = ip.clone();
+            let session_marker = session_id.get();
+            let session_id_async = session_id.clone();
+
+            glib::MainContext::default().spawn_local(async move {
+                let result = runtime_handle
+                    .spawn(async move { run_client(server_addr).await })
+                    .await;
+
+                if session_id_async.get() != session_marker {
+                    return;
+                }
+
+                hide_spinner(&spinner_row_async, &spinner_async);
+                button_async.set_sensitive(true);
+                ip_entry_async.set_sensitive(true);
+                port_entry_async.set_sensitive(true);
+
+                match result {
+                    Ok(Ok((endpoint, connection))) => {
+                        hide_status(&status_row_async, &status_label_async);
+                        if let Some(handler) = handler_option {
+                            handler(ip_for_callback, portnum, endpoint, connection);
+                        }
+                    }
+                    Ok(Err(err)) => {
+                        let message = format!("Failed to connect: {err}");
+                        show_status(&status_row_async, &status_label_async, &message);
+                        println!("{message}");
+                    }
+                    Err(join_err) => {
+                        let message = format!("Failed to connect: {join_err}");
+                        show_status(&status_row_async, &status_label_async, &message);
+                        println!("{message}");
+                    }
+                }
+            });
+        });
+    }
+
+    fn hide_status(&self) {
+        hide_status(&self.status_row, &self.status_label);
+    }
+
+    fn hide_spinner(&self) {
+        hide_spinner(&self.spinner_row, &self.spinner);
+    }
+
+    fn bump_session(&self) {
+        let next = self.session_id.get().wrapping_add(1);
+        self.session_id.set(next);
+    }
 }
 
 fn build_container() -> Box {
@@ -108,114 +277,6 @@ fn build_spinner_row() -> (Box, Spinner) {
     row.append(&label);
 
     (row, spinner)
-}
-
-fn wire_enter_button(
-    enter_button: &Button,
-    ip_entry: &Entry,
-    port_entry: &Entry,
-    status_row: &Box,
-    status_label: &Label,
-    spinner_row: &Box,
-    spinner: &Spinner,
-    on_success: Rc<dyn Fn(String, u16, Endpoint, Connection)>,
-) {
-    let button_for_ip = enter_button.clone();
-    ip_entry.connect_activate(move |_entry| {
-        button_for_ip.emit_clicked();
-    });
-
-    let button_for_port = enter_button.clone();
-    port_entry.connect_activate(move |_entry| {
-        button_for_port.emit_clicked();
-    });
-
-    let ip_entry = ip_entry.clone();
-    let port_entry = port_entry.clone();
-    let status_row = status_row.clone();
-    let status_label = status_label.clone();
-    let spinner_row = spinner_row.clone();
-    let spinner = spinner.clone();
-    let on_success = on_success.clone();
-
-    enter_button.connect_clicked(move |_btn: &Button| {
-        hide_status(&status_row, &status_label);
-
-        let ip_value = ip_entry.text();
-        let ip = ip_value.trim().to_string();
-        if ip.is_empty() {
-            show_status(&status_row, &status_label, "IP address is required");
-            return;
-        }
-
-        let port_value = port_entry.text();
-        let port = port_value.trim().to_string();
-        if port.is_empty() {
-            show_status(&status_row, &status_label, "Port is required");
-            return;
-        }
-
-        let portnum = match port.parse::<u16>() {
-            Ok(n) => n,
-            Err(_) => {
-                show_status(&status_row, &status_label, "Invalid port number");
-                return;
-            }
-        };
-
-        let ip_addr = match ip.parse::<IpAddr>() {
-            Ok(a) => a,
-            Err(_) => {
-                show_status(&status_row, &status_label, "Invalid IP address");
-                return;
-            }
-        };
-        let server_addr = SocketAddr::new(ip_addr, portnum);
-
-        show_spinner(&spinner_row, &spinner);
-        _btn.set_sensitive(false);
-        ip_entry.set_sensitive(false);
-        port_entry.set_sensitive(false);
-
-        let runtime_handle = quic_runtime().handle().clone();
-        let status_row_async = status_row.clone();
-        let status_label_async = status_label.clone();
-        let spinner_row_async = spinner_row.clone();
-        let spinner_async = spinner.clone();
-        let ip_entry_async = ip_entry.clone();
-        let port_entry_async = port_entry.clone();
-        let button_async = _btn.clone();
-        let on_success_async = on_success.clone();
-        let ip_for_callback = ip.clone();
-
-        glib::MainContext::default().spawn_local(async move {
-            let result = runtime_handle
-                .spawn(async move { run_client(server_addr).await })
-                .await;
-
-            hide_spinner(&spinner_row_async, &spinner_async);
-            button_async.set_sensitive(true);
-            ip_entry_async.set_sensitive(true);
-            port_entry_async.set_sensitive(true);
-
-            match result {
-                Ok(Ok((endpoint, connection))) => {
-                    hide_status(&status_row_async, &status_label_async);
-                    on_success_async(ip_for_callback, portnum, endpoint, connection);
-                }
-                Ok(Err(err)) => {
-                    let message = format!("Failed to connect: {err}");
-                    show_status(&status_row_async, &status_label_async, &message);
-                    println!("{message}");
-                }
-                Err(join_err) => {
-                    let message = format!("Failed to connect: {join_err}");
-                    show_status(&status_row_async, &status_label_async, &message);
-                    println!("{message}");
-                }
-            }
-        });
-    });
 }
 
 fn hide_status(row: &Box, label: &Label) {

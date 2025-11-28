@@ -6,7 +6,7 @@ use libadwaita::{gio::Menu, Application};
 pub fn build(app: &Application) -> MenuButton {
     let menubar = Menu::new();
     let connect_menu = Menu::new();
-    connect_menu.append(Some("test"), Some("app.test"));
+    connect_menu.append(Some("Back to Connect"), Some("app.reset"));
     menubar.append_submenu(Some("Connect"), &connect_menu);
 
     app.set_menubar(Some(&menubar));

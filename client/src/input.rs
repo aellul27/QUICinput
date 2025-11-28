@@ -1,106 +1,136 @@
+use glib::SendWeakRef;
 use gtk4::prelude::*;
-use gtk4::{Box, GestureClick, Label, Orientation};
+use gtk4::{Align, Box, Button, GestureClick, Label, Orientation};
 use quinn::{Connection, Endpoint};
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::key_monitor::start_global_key_monitor;
-use glib::{object::ObjectType, WeakRef};
-use std::{cell::RefCell, thread::LocalKey};
-
-thread_local! {
-    static ROOT_CONTAINER: RefCell<Option<WeakRef<Box>>> = RefCell::new(None);
-	static INFO_LABEL:  RefCell<Option<WeakRef<Label>>> = RefCell::new(None);
-	static CONNECTION: RefCell<Option<(Endpoint, Connection)>> = RefCell::new(None);
-}
-
 
 const OUTER_MARGIN: i32 = 32;
 const INNER_SPACING: i32 = 18;
+const INFO_DEFAULT: &str = "Click here to start capture.";
+const INFO_CAPTURE_ACTIVE: &str = "Type CTRL-ALT-0 to ungrab and stop capture.";
 
-pub fn build() -> Box {
-	let container = Box::new(Orientation::Vertical, INNER_SPACING);
-	store_widget(&ROOT_CONTAINER, &container);
-	container.set_margin_top(OUTER_MARGIN);
-	container.set_margin_bottom(OUTER_MARGIN);
-	container.set_margin_start(OUTER_MARGIN);
-	container.set_margin_end(OUTER_MARGIN);
-	container.set_hexpand(true);
-	container.set_vexpand(true);
-	container.set_focusable(true);
-	container.set_can_focus(true);
+#[derive(Clone)]
+pub struct InputView {
+	inner: Rc<InputViewInner>,
+}
 
-	let title = Label::new(Some("Event monitor"));
-	title.add_css_class("title-3");
-	title.set_xalign(0.0);
-	container.append(&title);
+struct InputViewInner {
+	container: Box,
+	info_label: Label,
+	connection: RefCell<Option<(Endpoint, Connection)>>,
+}
 
-	let info: Label = Label::new(Some("Click here to start capture."));
-	store_widget(&INFO_LABEL, &info);
-	info.set_xalign(0.0);
-	info.set_wrap(true);
-	let clicker = GestureClick::new();
-	clicker.connect_pressed(move |_, _, _, _| {
-		with_connection(|endpoint, connection| {
-			start_global_key_monitor(endpoint, connection);
-			with_widget(&ROOT_CONTAINER, |container: Box| {
-				container.set_cursor_from_name(Some("none"));
-			});
-			with_widget(&INFO_LABEL, |label: Label| {
-				label.set_label("Type CTRL-ALT-0 to ungrab and stop capture.");
-			});
+impl InputView {
+	pub fn new() -> Self {
+		let container = Box::new(Orientation::Vertical, INNER_SPACING);
+		container.set_margin_top(OUTER_MARGIN);
+		container.set_margin_bottom(OUTER_MARGIN);
+		container.set_margin_start(OUTER_MARGIN);
+		container.set_margin_end(OUTER_MARGIN);
+		container.set_hexpand(true);
+		container.set_vexpand(true);
+		container.set_focusable(true);
+		container.set_can_focus(true);
+
+		let header_row = Box::new(Orientation::Horizontal, INNER_SPACING);
+		header_row.set_hexpand(true);
+
+		let title = Label::new(Some("Event monitor"));
+		title.add_css_class("title-3");
+		title.set_xalign(0.0);
+		title.set_hexpand(true);
+		title.set_halign(Align::Start);
+		header_row.append(&title);
+
+		let disconnect_button = Button::with_label("Disconnect");
+		disconnect_button.set_halign(Align::End);
+		disconnect_button.connect_clicked(|button| {
+			let _ = button.activate_action("app.reset", None);
 		});
-	});
-	container.add_controller(clicker);
-	container.append(&info);
+		header_row.append(&disconnect_button);
 
-	container
+		container.append(&header_row);
+
+		let info_label = Label::new(Some(INFO_DEFAULT));
+		info_label.set_xalign(0.0);
+		info_label.set_wrap(true);
+
+		let inner = Rc::new(InputViewInner {
+			container: container.clone(),
+			info_label: info_label.clone(),
+			connection: RefCell::new(None),
+		});
+
+		let clicker = GestureClick::new();
+		let inner_for_click = Rc::clone(&inner);
+		clicker.connect_pressed(move |_, _, _, _| {
+			inner_for_click.start_capture();
+		});
+		container.add_controller(clicker);
+		container.append(&info_label);
+
+		Self { inner }
+	}
+
+	pub fn widget(&self) -> Box {
+		self.inner.container.clone()
+	}
+
+	pub fn set_connection(&self, endpoint: Endpoint, connection: Connection) {
+		self.inner
+			.connection
+			.borrow_mut()
+			.replace((endpoint, connection));
+		self.focus();
+	}
+
+	pub fn take_connection(&self) -> Option<(Endpoint, Connection)> {
+		self.inner.connection.borrow_mut().take()
+	}
+
+	pub fn reset(&self) {
+		self.inner.connection.borrow_mut().take();
+		self.inner.mark_ungrabbed();
+	}
+
+	pub fn focus(&self) {
+		self.inner.container.grab_focus();
+	}
 }
 
-pub fn set_connection(endpoint: Endpoint, connection: Connection) {
-	CONNECTION.with(|cell| {
-		*cell.borrow_mut() = Some((endpoint, connection));
-	});
-}
+impl InputViewInner {
+	fn start_capture(self: &Rc<Self>) {
+		let maybe_connection = self.connection.borrow().clone();
+		let Some((endpoint, connection)) = maybe_connection else {
+			return;
+		};
 
-fn with_widget<T, F>(storage: &'static LocalKey<RefCell<Option<WeakRef<T>>>>, action: F)
-where
-	T: Clone + ObjectType,
-	F: FnOnce(T),
-{
-	storage.with(|cell| {
-		if let Some(widget) = cell
-			.borrow()
-			.as_ref()
-			.and_then(|weak| weak.upgrade())
-		{
-			action(widget);
+		self.mark_grabbed();
+		let container_weak: SendWeakRef<Box> = self.container.downgrade().into();
+		let label_weak: SendWeakRef<Label> = self.info_label.downgrade().into();
+		let started = start_global_key_monitor(endpoint, connection, move || {
+			if let Some(container) = container_weak.upgrade() {
+				container.set_cursor_from_name(None);
+			}
+			if let Some(label) = label_weak.upgrade() {
+				label.set_label(INFO_DEFAULT);
+			}
+		});
+		if !started {
+			self.mark_ungrabbed();
 		}
-	});
-}
+	}
 
-fn store_widget<T>(storage: &'static LocalKey<RefCell<Option<WeakRef<T>>>>, widget: &T)
-where
-	T: Clone + ObjectType,
-{
-	storage.with(|cell| {
-		*cell.borrow_mut() = Some(widget.downgrade());
-	});
-}
+	fn mark_grabbed(&self) {
+		self.container.set_cursor_from_name(Some("none"));
+		self.info_label.set_label(INFO_CAPTURE_ACTIVE);
+	}
 
-fn with_connection<F>(action: F)
-where
-	F: FnOnce(Endpoint, Connection),
-{
-	CONNECTION.with(|cell| {
-		if let Some((endpoint, connection)) = cell.borrow().as_ref() {
-			action(endpoint.clone(), connection.clone());
-		}
-	});
-}
-
-pub fn input_ungrabbed() {
-	with_widget(&ROOT_CONTAINER, |container: Box| {
-		container.set_cursor_from_name(None);
-	});
-	with_widget(&INFO_LABEL, |label: Label| {
-		label.set_label("Click here to start capture.");
-	});
+	fn mark_ungrabbed(&self) {
+		self.container.set_cursor_from_name(None);
+		self.info_label.set_label(INFO_DEFAULT);
+	}
 }

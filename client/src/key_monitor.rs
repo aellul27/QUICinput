@@ -1,29 +1,41 @@
+use libadwaita::glib;
+use quinn::{Connection, Endpoint};
 use rdev::{grab, simulate, Event, EventType, Key};
 #[cfg(target_os = "macos")]
 use rdev::set_is_main_thread;
 use shared::MouseMove;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self};
-use quinn::{Connection, Endpoint};
+
 use crate::quic_helper_thread::{spawn_quic_helper, QuicCommand, QuicSender};
 
 static IGNORE_MOUSE: AtomicBool = AtomicBool::new(false);
 
-
-use crate::input::{input_ungrabbed};
-use crate::windowresolution::{find_window_size};
+use crate::windowresolution::find_window_size;
 
 static MONITOR_RUNNING: AtomicBool = AtomicBool::new(false);
 
-pub fn start_global_key_monitor(endpoint: Endpoint, connection: Connection) {
+type UngrabCallback = Box<dyn Fn() + Send + 'static>;
+
+pub fn start_global_key_monitor<F>(endpoint: Endpoint, connection: Connection, on_ungrab: F) -> bool
+where
+    F: Fn() + Send + 'static,
+{
     let already_running = MONITOR_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err();
     if already_running {
         println!("Global key monitor already running");
-        return;
+        return false;
+    }
+
+    {
+        let mut slot = ungrab_callback_storage()
+            .lock()
+            .expect("ungrab callback mutex poisoned");
+        *slot = Some(Box::new(on_ungrab));
     }
 
     thread::spawn(move || {
@@ -33,6 +45,7 @@ pub fn start_global_key_monitor(endpoint: Endpoint, connection: Connection) {
             run_key_monitor(endpoint_for_run, connection_for_run);
         }));
         MONITOR_RUNNING.store(false, Ordering::SeqCst);
+        notify_ungrab();
         match result {
             Ok(()) => println!("Global key monitor stopped"),
             Err(err) => {
@@ -44,6 +57,8 @@ pub fn start_global_key_monitor(endpoint: Endpoint, connection: Connection) {
             }
         }
     });
+
+    true
 }
 
 fn send_data(quic_sender: &mut Option<QuicSender>, command: QuicCommand) {
@@ -132,18 +147,34 @@ fn run_key_monitor(_endpoint: Endpoint, connection: Connection) {
 
     if let Err(error) = grab(callback) {
         eprintln!("Failed to grab input events: {error:?}");
+        notify_ungrab();
     }
 }
 
 fn request_monitor_stop() {
-    glib::MainContext::default().invoke(|| {
-        input_ungrabbed();
-    });
+    notify_ungrab();
     #[cfg(target_os = "macos")]
     macos_run_loop::stop_current();
 
     #[cfg(not(target_os = "macos"))]
     panic::panic_any(MonitorStop);
+}
+
+fn notify_ungrab() {
+    if let Some(callback) = ungrab_callback_storage()
+        .lock()
+        .expect("ungrab callback mutex poisoned")
+        .take()
+    {
+        glib::MainContext::default().invoke(move || {
+            callback();
+        });
+    }
+}
+
+fn ungrab_callback_storage() -> &'static Mutex<Option<UngrabCallback>> {
+    static STORAGE: OnceLock<Mutex<Option<UngrabCallback>>> = OnceLock::new();
+    STORAGE.get_or_init(|| Mutex::new(None))
 }
 
 #[cfg(target_os = "macos")]

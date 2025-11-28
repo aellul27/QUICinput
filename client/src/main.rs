@@ -6,12 +6,15 @@ mod windowresolution;
 mod quic;
 mod quic_helper_thread;
 
+use std::rc::Rc;
+
 use libadwaita::gio::SimpleAction;
 use libadwaita::prelude::*;
 use libadwaita::{glib, Application, ApplicationWindow, HeaderBar, ToolbarView};
 use gtk4::{Stack, StackTransitionType};
 use rustls::crypto::aws_lc_rs;
 use rustls::crypto::CryptoProvider;
+use quinn::{Connection, Endpoint};
 
 
 const APP_ID: &str = "com.aellul27.quicinput.client";
@@ -36,15 +39,16 @@ fn build_ui(app: &Application) {
     header.pack_end(&menubar::build(app));
     toolbar_view.add_top_bar(&header);
 
-    let stack = build_stack();
-    toolbar_view.set_content(Some(&stack));
+    let controller = AppController::new();
+    toolbar_view.set_content(Some(&controller.stack()));
 
-    if app.lookup_action("test").is_none() {
-        let connect_action = SimpleAction::new("test", None);
-        connect_action.connect_activate(|_, _| {
-            println!("Connect > test triggered");
+    if app.lookup_action("reset").is_none() {
+        let controller_for_action = controller.clone();
+        let reset_action = SimpleAction::new("reset", None);
+        reset_action.connect_activate(move |_, _| {
+            controller_for_action.reset();
         });
-        app.add_action(&connect_action);
+        app.add_action(&reset_action);
     }
 
     let (window_height, window_width) = windowresolution::find_window_size();
@@ -62,26 +66,81 @@ fn build_ui(app: &Application) {
     window.present();
 }
 
-fn build_stack() -> Stack {
-    let stack = Stack::builder()
-        .hexpand(true)
-        .vexpand(true)
-        .transition_type(StackTransitionType::SlideLeft)
-        .build();
+struct AppController {
+    stack: Stack,
+    connect_view: connect::ConnectView,
+    input_view: input::InputView,
+}
 
-    let input_view = input::build();
-    stack.add_named(&input_view, Some("input"));
+impl AppController {
+    fn new() -> Rc<Self> {
+        let stack = Stack::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .transition_type(StackTransitionType::SlideLeft)
+            .build();
 
-    let stack_for_connect = stack.clone();
-    let input_view_for_connect = input_view.clone();
-        let connect_view = connect::build(move |ip, port, endpoint, connection| {
-            println!("Connected to {}:{}", ip, port);
-            input::set_connection(endpoint, connection);
-        stack_for_connect.set_visible_child_name("input");
-        input_view_for_connect.grab_focus();
-    });
-    stack.add_named(&connect_view, Some("connect"));
+        let input_view = input::InputView::new();
+        let connect_view = connect::ConnectView::new();
 
-    stack.set_visible_child_name("connect");
-    stack
+        let controller = Rc::new(Self {
+            stack,
+            connect_view,
+            input_view,
+        });
+
+        controller.initialize();
+
+        controller
+    }
+
+    fn initialize(self: &Rc<Self>) {
+        self.stack
+            .add_named(&self.connect_view.widget(), Some("connect"));
+        self.stack
+            .add_named(&self.input_view.widget(), Some("input"));
+        self.stack.set_visible_child_name("connect");
+
+        self.connect_view.set_on_connect({
+            let controller = Rc::clone(self);
+            move |ip, port, endpoint, connection| {
+                controller.handle_connected(ip, port, endpoint, connection);
+            }
+        });
+
+        self.connect_view.focus();
+    }
+
+    fn stack(&self) -> Stack {
+        self.stack.clone()
+    }
+
+    fn handle_connected(&self, ip: String, port: u16, endpoint: Endpoint, connection: Connection) {
+        println!("Connected to {}:{}", ip, port);
+        self.input_view.set_connection(endpoint, connection);
+        self.show_input();
+    }
+
+    fn show_input(&self) {
+        self.stack.set_visible_child_name("input");
+        self.input_view.focus();
+    }
+
+    fn reset(&self) {
+        self.shutdown_connection();
+        self.input_view.reset();
+        self.connect_view.reset();
+        self.stack.set_visible_child_name("connect");
+        self.connect_view.focus();
+    }
+
+    fn shutdown_connection(&self) {
+        if let Some((endpoint, connection)) = self.input_view.take_connection() {
+            quic::quic_runtime().spawn(async move {
+                if let Err(error) = quic::close_client(connection, endpoint).await {
+                    eprintln!("failed to close client cleanly: {error}");
+                }
+            });
+        }
+    }
 }
