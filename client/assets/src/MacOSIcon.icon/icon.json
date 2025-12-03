@@ -1,18 +1,21 @@
 {
-  "fill" : {
-    "automatic-gradient" : "display-p3:0.30275,0.42789,0.70614,1.00000"
-  },
+  "fill-specializations" : [
+    {
+      "value" : {
+        "automatic-gradient" : "display-p3:0.30275,0.42789,0.70614,1.00000"
+      }
+    },
+    {
+      "appearance" : "dark",
+      "value" : "automatic"
+    }
+  ],
   "groups" : [
     {
+      "blend-mode" : "normal",
       "blur-material" : null,
       "layers" : [
         {
-          "fill-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : "automatic"
-            }
-          ],
           "glass" : false,
           "image-name" : "QUICinput Icon.svg",
           "name" : "QUICinput Icon",
@@ -25,6 +28,14 @@
           }
         },
         {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.30275,0.42789,0.70614,1.00000"
+              }
+            }
+          ],
           "glass" : true,
           "image-name" : "Asset 1.svg",
           "name" : "Asset 1",
@@ -50,9 +61,8 @@
     }
   ],
   "supported-platforms" : {
-    "circles" : [
-      "watchOS"
-    ],
-    "squares" : "shared"
+    "squares" : [
+      "macOS"
+    ]
   }
 }

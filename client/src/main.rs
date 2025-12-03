@@ -5,6 +5,7 @@ mod menubar;
 mod windowresolution;
 mod quic;
 mod quic_helper_thread;
+mod about;
 
 use std::rc::Rc;
 
@@ -20,6 +21,10 @@ use quinn::{Connection, Endpoint};
 const APP_ID: &str = "com.aellul27.quicinput.client";
 
 fn main() -> glib::ExitCode {
+    // let res_bytes = include_bytes!(concat!(env!("OUT_DIR"), "/icons.gresource"));
+    // let resource = gtk4::gio::Resource::from_data(&glib::Bytes::from_static(res_bytes))
+    //     .expect("Failed to load GResource");
+    // gtk4::gio::resources_register(&resource);
     // Create a new application
     let app = Application::builder().application_id(APP_ID).build();
     CryptoProvider::install_default(aws_lc_rs::default_provider())
@@ -62,6 +67,22 @@ fn build_ui(app: &Application) {
         app.add_action(&quit_action);
         app.set_accels_for_action("app.quit", &["<Primary>q"]);
     }
+    
+    if app.lookup_action("about").is_none() {
+        let app_for_about = app.clone();
+        let about_action = SimpleAction::new("about", None);
+
+        about_action.connect_activate(move |_, _| {
+            let parent = app_for_about
+                .active_window()
+                .and_then(|window| window.downcast::<ApplicationWindow>().ok());
+
+            about::show_about(parent.as_ref());
+        });
+
+        app.add_action(&about_action);
+        app.set_accels_for_action("app.about", &["F1"]);
+    }
 
     {
         let controller_for_shutdown = controller.clone();
@@ -81,6 +102,10 @@ fn build_ui(app: &Application) {
         .content(&toolbar_view)
         .build();
 
+    // Dont set icon on MacOS
+    #[cfg(not(target_os = "macos"))]
+    setup_icon();
+
     {
         let controller_for_close = controller.clone();
         let app_for_close = app.clone();
@@ -93,6 +118,17 @@ fn build_ui(app: &Application) {
     
     // Present window
     window.present();
+}
+
+// Called during app startup
+fn setup_icon() {
+    let display = gtk4::gdk::Display::default().unwrap();
+    let theme = gtk4::IconTheme::for_display(&display);
+
+    // Adds the prefix to the search path
+    theme.add_resource_path("/com/aellul27/quicinput/client/icons");
+
+    gtk4::Window::set_default_icon_name("Icon");
 }
 
 struct AppController {
